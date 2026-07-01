@@ -212,26 +212,37 @@ Failed: 1
 
 Use your Hermes/OpenClaw Telegram bot token/chat ID to receive daily success/failure reports.
 
-## Cron examples
+## 24-hour auto-run guard for local/offline servers
 
-The script already includes an internal 1-15 minute randomized initial delay.
+For a local server that may not stay online all day, use the guard script instead of a plain once-daily cron. The guard:
 
-Daily Docker run:
+- gets current UTC time from internet sources;
+- refuses to trust a stale local clock if internet time cannot be reached;
+- skips if the last successful run was less than `MIN_INTERVAL_SECONDS` ago;
+- defaults to `86400` seconds, i.e. every 24 hours after the last success;
+- records a new success timestamp only after `docker compose run` exits successfully;
+- uses `flock` to avoid overlapping runs.
+
+Install cron entries:
+
+```cron
+# telegram-daily-checkin auto daily guard
+@reboot /path/to/telegram-daily-checkin/scripts/run-daily-if-due.sh >> /path/to/telegram-daily-checkin/logs/daily-cron.log 2>&1
+17 * * * * /path/to/telegram-daily-checkin/scripts/run-daily-if-due.sh >> /path/to/telegram-daily-checkin/logs/daily-cron.log 2>&1
+```
+
+The hourly line does **not** run the bots every hour. It only checks whether a successful run is due. If the server was offline at the exact 24-hour mark, the next boot/hourly tick catches up.
+
+Optional overrides:
+
+```bash
+MIN_INTERVAL_SECONDS=86400 APP_DIR=/path/to/telegram-daily-checkin scripts/run-daily-if-due.sh
+```
+
+Plain cron alternative, if your server is always online and you want calendar-time scheduling:
 
 ```cron
 0 9 * * * cd /path/to/telegram-daily-checkin && docker compose run --rm telegram-daily-checkin >> logs/cron.log 2>&1
-```
-
-Cron-level extra randomness plus script-level jitter:
-
-```cron
-0 9 * * * cd /path/to/telegram-daily-checkin && sleep $((RANDOM % 3600)) && docker compose run --rm telegram-daily-checkin >> logs/cron.log 2>&1
-```
-
-Host Python alternative:
-
-```cron
-0 9 * * * cd /path/to/telegram-daily-checkin && . .venv/bin/activate && python telegram_daily_checkin.py >> logs/cron.log 2>&1
 ```
 
 ## SOCKS5 proxy
