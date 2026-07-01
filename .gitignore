@@ -3,11 +3,15 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
 
-# Secrets/session state
+# Secrets/config/session state
 .env
+config.yaml
 *.session
 *.session-journal
+data/
+logs/
 
-# Logs
+# Build/runtime
 *.log

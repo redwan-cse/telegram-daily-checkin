@@ -1,0 +1,79 @@
+# Per-account, per-bot action configuration.
+# Environment variables like ${TELEGRAM_API_ID} are expanded at runtime.
+
+data_dir: /app/data
+logs_dir: /app/logs
+log_file: /app/logs/checkin.log
+
+proxy:
+  enabled: false
+  host: 127.0.0.1
+  port: 1080
+  username: ""
+  password: ""
+
+delays:
+  # Randomized start after cron/container trigger: 1-15 minutes.
+  initial_min_seconds: 60
+  initial_max_seconds: 900
+  # Delay between bots for the same account.
+  between_bot_min_seconds: 20
+  between_bot_max_seconds: 75
+  # Delay between different Telegram accounts.
+  between_account_min_seconds: 30
+  between_account_max_seconds: 120
+
+report:
+  enabled: false
+  # Prefer env vars REPORT_BOT_TOKEN and REPORT_CHAT_ID in .env.
+  bot_token: "${REPORT_BOT_TOKEN}"
+  chat_id: "${REPORT_CHAT_ID}"
+  label: telegram-daily-checkin
+
+accounts:
+  - id: primary_account
+    # Optional. If omitted, first interactive run asks for phone.
+    phone: ""
+    # Prefer global env TELEGRAM_API_ID / TELEGRAM_API_HASH.
+    api_id: ${TELEGRAM_API_ID}
+    api_hash: "${TELEGRAM_API_HASH}"
+    bots:
+      # Bot with slash command.
+      - username: "@BotA"
+        actions:
+          - type: send_command
+            value: "/daily"
+
+      # Bot with plain text message command.
+      - username: "@BotB"
+        actions:
+          - type: send_message
+            value: "📅 Daily Check-in"
+
+      # Bot that first needs /start then a chat inline/reply button click.
+      # This is MTProto chat button clicking, not desktop/mobile app UI clicking.
+      - username: "@BotC"
+        actions:
+          - type: send_command
+            value: "/start"
+          - type: click_button
+            value: "📅 Daily Check-in"
+            wait_seconds: 5
+
+      # True native Telegram app UI cases cannot be clicked by this Docker runner.
+      # Keep them explicit so the daily report flags them for a separate GUI runner.
+      - username: "@BotNeedsNativeApp"
+        actions:
+          - type: manual_ui_required
+            value: "Needs Telegram Desktop/mobile UI click; run with separate GUI automation"
+
+  # Example second account. Delete if unused.
+  # - id: secondary_account
+  #   phone: "+8801XXXXXXXXX"
+  #   api_id: ${TELEGRAM_API_ID}
+  #   api_hash: "${TELEGRAM_API_HASH}"
+  #   bots:
+  #     - username: "@AnotherBot"
+  #       actions:
+  #         - type: send_command
+  #           value: "/reward"

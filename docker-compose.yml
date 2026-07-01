@@ -1,0 +1,29 @@
+services:
+  telegram-daily-checkin:
+    build: .
+    image: telegram-daily-checkin:latest
+    container_name: telegram-daily-checkin
+    restart: "no"
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:-}
+      REPORT_ENABLED: ${REPORT_ENABLED:-false}
+      REPORT_BOT_TOKEN: ${REPORT_BOT_TOKEN:-}
+      REPORT_CHAT_ID: ${REPORT_CHAT_ID:-}
+      REPORT_LABEL: ${REPORT_LABEL:-telegram-daily-checkin}
+      CHECKIN_CONFIG_PATH: /app/config.yaml
+      DATA_DIR: /app/data
+      LOGS_DIR: /app/logs
+      SESSION_DB_PATH: /app/data/sessions.sqlite3
+      LOG_FILE: /app/logs/checkin.log
+      TZ: Asia/Dhaka
+    volumes:
+      # Encrypted SQLite sessions and execution history persist here.
+      - ./data:/app/data
+      # Persistent console/file logs persist here.
+      - ./logs:/app/logs
+      # Per-account/per-bot action config.
+      - ./config.yaml:/app/config.yaml:ro
+    security_opt:
+      - no-new-privileges:true

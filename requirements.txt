@@ -1,3 +1,5 @@
 telethon>=1.42,<2
 PySocks>=1.7,<2
 python-dotenv>=1.0,<2
+PyYAML>=6.0,<7
+cryptography>=42,<47
