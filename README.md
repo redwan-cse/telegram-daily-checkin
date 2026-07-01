@@ -150,7 +150,7 @@ docker compose build
 First interactive run for Telegram login:
 
 ```bash
-docker compose run --rm telegram-daily-checkin
+docker compose run --rm -it telegram-daily-checkin
 ```
 
 If an account has no encrypted session, the script prompts for:
@@ -170,6 +170,8 @@ Normal one-shot execution:
 ```bash
 docker compose run --rm telegram-daily-checkin
 ```
+
+Only the first login run needs `-it`; scheduled one-shot runs do not.
 
 The service is intentionally one-shot. Cron/systemd should trigger it daily.
 

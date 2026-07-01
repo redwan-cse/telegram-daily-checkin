@@ -610,7 +610,8 @@ def format_execution_report(label: str, started_at: str, finished_at: str, resul
 def send_telegram_report(report: ReportConfig, text: str) -> None:
     if not report.enabled:
         return
-    assert report.bot_token and report.chat_id
+    if not report.bot_token or not report.chat_id:
+        raise RuntimeError("Report delivery enabled but bot_token or chat_id is missing")
     url = f"https://api.telegram.org/bot{report.bot_token}/sendMessage"
     payload = urllib.parse.urlencode(
         {
