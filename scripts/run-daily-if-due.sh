@@ -64,6 +64,10 @@ run_due_check() {
   fi
 
   elapsed=$(( now_epoch - last_epoch ))
+  if (( elapsed < 0 )); then
+    printf 'last success timestamp is in the future; refusing to repeat check-ins\n' >&2
+    return 2
+  fi
   if (( elapsed >= 0 && elapsed < MIN_INTERVAL_SECONDS )); then
     printf '%s | skip | last successful check-in %ss ago (<%ss)\n' "$(date -u -d "@$now_epoch" '+%Y-%m-%dT%H:%M:%SZ')" "$elapsed" "$MIN_INTERVAL_SECONDS"
     return 0
@@ -71,9 +75,15 @@ run_due_check() {
 
   printf '%s | due | running %s\n' "$(date -u -d "@$now_epoch" '+%Y-%m-%dT%H:%M:%SZ')" "$COMPOSE_SERVICE"
   if docker compose run --rm "$COMPOSE_SERVICE"; then
-    confirmed_epoch="$(internet_epoch)"
+    if ! confirmed_epoch="$(internet_epoch)"; then
+      # The run succeeded. Preserve its trusted start time instead of repeating actions.
+      confirmed_epoch="$now_epoch"
+      printf 'completion time unavailable; recording trusted run start time\n' >&2
+    fi
     umask 077
-    printf '%s\n' "$confirmed_epoch" > "$STATE_FILE"
+    state_tmp="$(mktemp "${STATE_FILE}.tmp.XXXXXX")"
+    printf '%s\n' "$confirmed_epoch" > "$state_tmp"
+    mv -f -- "$state_tmp" "$STATE_FILE"
     printf '%s | success | recorded last_success_epoch=%s\n' "$(date -u -d "@$confirmed_epoch" '+%Y-%m-%dT%H:%M:%SZ')" "$confirmed_epoch"
     return 0
   else

@@ -21,13 +21,15 @@ import json
 import logging
 import os
 import random
+import re
 import sqlite3
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 from cryptography.fernet import Fernet, InvalidToken
@@ -165,7 +167,21 @@ def _env_bool(name: str, default: bool = False) -> bool:
     raw = _env(name)
     if not raw:
         return default
-    return raw.lower() in {"1", "true", "yes", "y", "on"}
+    return _parse_bool(raw, name)
+
+
+def _parse_bool(value: Any, label: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(f"{label} must be a boolean")
 
 
 def _validate_delay_window(label: str, minimum: int, maximum: int) -> None:
@@ -203,7 +219,13 @@ def _required_str(value: Any, label: str) -> str:
 
 
 def _optional_str(value: Any) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    # Missing credential variables must not be mistaken for actual credentials.
+    if re.fullmatch(r"\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)", value):
+        return None
+    return value
 
 
 def _parse_accounts(config: dict[str, Any]) -> tuple[AccountConfig, ...]:
@@ -214,10 +236,14 @@ def _parse_accounts(config: dict[str, Any]) -> tuple[AccountConfig, ...]:
         raise ValueError("config.yaml must define at least one account under accounts:")
 
     accounts: list[AccountConfig] = []
+    account_ids: set[str] = set()
     for index, account_raw in enumerate(accounts_raw, start=1):
         if not isinstance(account_raw, dict):
             raise ValueError(f"accounts[{index}] must be a mapping")
         account_id = _required_str(account_raw.get("id"), f"accounts[{index}].id")
+        if account_id in account_ids:
+            raise ValueError(f"Duplicate account id: {account_id}")
+        account_ids.add(account_id)
         api_id = int(account_raw.get("api_id") or global_api_id)
         api_hash = _optional_str(account_raw.get("api_hash")) or global_api_hash
         if api_id <= 0 or not api_hash:
@@ -231,7 +257,7 @@ def _parse_accounts(config: dict[str, Any]) -> tuple[AccountConfig, ...]:
         bots: list[BotCheckin] = []
         for bot_index, bot_raw in enumerate(bots_raw, start=1):
             if isinstance(bot_raw, str):
-                username = bot_raw.strip()
+                username = _required_str(bot_raw, f"{account_id}.bots[{bot_index}].username")
                 actions = (BotAction(type="send_command", value="/checkin"),)
             elif isinstance(bot_raw, dict):
                 username = _required_str(
@@ -268,6 +294,8 @@ def _parse_accounts(config: dict[str, Any]) -> tuple[AccountConfig, ...]:
                             f"{account_id}.{username}.actions[{action_index}].value",
                         )
                         wait_seconds = int(action_raw.get("wait_seconds", 5))
+                        if wait_seconds < 0:
+                            raise ValueError(f"Account {account_id}: bot {username} wait_seconds must be non-negative")
                         parsed_actions.append(
                             BotAction(type=action_type, value=value, wait_seconds=wait_seconds)
                         )
@@ -276,6 +304,8 @@ def _parse_accounts(config: dict[str, Any]) -> tuple[AccountConfig, ...]:
                 raise ValueError(f"Account {account_id}: bot entry {bot_index} must be string or mapping")
             if not username.startswith("@"):
                 username = f"@{username}"
+            if not username.lstrip("@").strip():
+                raise ValueError(f"Account {account_id}: bot username is required")
             bots.append(BotCheckin(username=username, actions=actions))
 
         accounts.append(
@@ -309,6 +339,15 @@ def load_settings() -> Settings:
     delays_raw = config.get("delays", {}) if isinstance(config.get("delays", {}), dict) else {}
     report_raw = config.get("report", {}) if isinstance(config.get("report", {}), dict) else {}
 
+    proxy_enabled_in_yaml = _parse_bool(proxy_raw.get("enabled", False), "proxy.enabled")
+    if proxy_enabled_in_yaml:
+        # Preserve a configured YAML proxy when .env contains the example defaults.
+        proxy_host = str(proxy_raw.get("host", _env("PROXY_HOST", "127.0.0.1")))
+        proxy_port = int(proxy_raw.get("port", _env_int("PROXY_PORT", 1080)))
+    else:
+        proxy_host = _env("PROXY_HOST") or str(proxy_raw.get("host", "127.0.0.1"))
+        proxy_port = _env_int("PROXY_PORT", int(proxy_raw.get("port", 1080)))
+
     delays = DelayConfig(
         initial_min_seconds=int(delays_raw.get("initial_min_seconds", _env_int("INITIAL_DELAY_MIN_SECONDS", 60))),
         initial_max_seconds=int(delays_raw.get("initial_max_seconds", _env_int("INITIAL_DELAY_MAX_SECONDS", 900))),
@@ -321,11 +360,12 @@ def load_settings() -> Settings:
     _validate_delay_window("BETWEEN_BOT_DELAY", delays.between_bot_min_seconds, delays.between_bot_max_seconds)
     _validate_delay_window("BETWEEN_ACCOUNT_DELAY", delays.between_account_min_seconds, delays.between_account_max_seconds)
 
-    report_enabled = bool(report_raw.get("enabled", _env_bool("REPORT_ENABLED", False)))
+    # Either source can enable a feature. Compose's false default must not disable YAML.
+    report_enabled = _parse_bool(report_raw.get("enabled", False), "report.enabled") or _env_bool("REPORT_ENABLED", False)
     report = ReportConfig(
         enabled=report_enabled,
-        bot_token=_optional_str(report_raw.get("bot_token")) or _env("REPORT_BOT_TOKEN") or None,
-        chat_id=_optional_str(report_raw.get("chat_id")) or _env("REPORT_CHAT_ID") or None,
+        bot_token=_optional_str(report_raw.get("bot_token")) or _optional_str(_env("REPORT_BOT_TOKEN")),
+        chat_id=_optional_str(report_raw.get("chat_id")) or _optional_str(_env("REPORT_CHAT_ID")),
         label=str(report_raw.get("label") or _env("REPORT_LABEL", "telegram-daily-checkin")),
     )
     if report.enabled and (not report.bot_token or not report.chat_id):
@@ -339,9 +379,9 @@ def load_settings() -> Settings:
         encryption_key=encryption_key,
         accounts=_parse_accounts(config),
         proxy=ProxyConfig(
-            enabled=bool(proxy_raw.get("enabled", _env_bool("PROXY_ENABLED", False))),
-            host=str(proxy_raw.get("host", _env("PROXY_HOST", "127.0.0.1"))),
-            port=int(proxy_raw.get("port", _env_int("PROXY_PORT", 1080))),
+            enabled=proxy_enabled_in_yaml or _env_bool("PROXY_ENABLED", False),
+            host=proxy_host,
+            port=proxy_port,
             username=_optional_str(proxy_raw.get("username")) or _env("PROXY_USERNAME") or None,
             password=_optional_str(proxy_raw.get("password")) or _env("PROXY_PASSWORD") or None,
         ),
@@ -358,8 +398,11 @@ class EncryptedSessionStore:
         self.fernet = Fernet(encryption_key.encode("utf-8"))
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3's transaction context commits/rolls back but does not close the handle.
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+            yield conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -478,7 +521,8 @@ def summarize_actions(bot: BotCheckin) -> str:
 async def click_latest_button_by_text(client: TelegramClient, entity: Any, button_text: str) -> None:
     messages = await client.get_messages(entity, limit=5)
     for message in messages:
-        if not getattr(message, "buttons", None):
+        buttons = getattr(message, "buttons", None)
+        if not buttons or not any(button.text == button_text for row in buttons for button in row):
             continue
         try:
             await message.click(text=button_text)
@@ -573,7 +617,9 @@ async def run_account(
         timeout=30,
     )
     results: list[BotResult] = []
-    async with client:
+    try:
+        # The context manager calls start() and would prompt before our configured login.
+        await client.connect()
         await authorize_if_needed(client, account)
         store.save_session(account.account_id, client.session.save())
         for index, bot in enumerate(account.bots, start=1):
@@ -585,6 +631,8 @@ async def run_account(
                     settings.delays.between_bot_max_seconds,
                 )
         store.save_session(account.account_id, client.session.save())
+    finally:
+        await client.disconnect()
     return results
 
 
@@ -607,22 +655,39 @@ def format_execution_report(label: str, started_at: str, finished_at: str, resul
     return "\n".join(lines)
 
 
+def _report_chunks(text: str) -> Iterator[str]:
+    chunk: list[str] = []
+    units = 0
+    for character in text:
+        # Count UTF-16 units conservatively, keeping each Unicode character intact.
+        width = 2 if ord(character) > 0xFFFF else 1
+        if units + width > 4096:
+            yield "".join(chunk)
+            chunk = []
+            units = 0
+        chunk.append(character)
+        units += width
+    if chunk or not text:
+        yield "".join(chunk)
+
+
 def send_telegram_report(report: ReportConfig, text: str) -> None:
     if not report.enabled:
         return
     if not report.bot_token or not report.chat_id:
         raise RuntimeError("Report delivery enabled but bot_token or chat_id is missing")
     url = f"https://api.telegram.org/bot{report.bot_token}/sendMessage"
-    payload = urllib.parse.urlencode(
-        {
-            "chat_id": report.chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(url, data=payload, method="POST")
-    with urllib.request.urlopen(request, timeout=30) as response:
-        response.read()
+    for chunk in _report_chunks(text):
+        payload = urllib.parse.urlencode(
+            {
+                "chat_id": report.chat_id,
+                "text": chunk,
+                "disable_web_page_preview": "true",
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(url, data=payload, method="POST")
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
     logging.info("Execution report sent to Telegram chat %s", report.chat_id)
 
 

@@ -4,6 +4,8 @@ services:
     image: telegram-daily-checkin:latest
     container_name: telegram-daily-checkin
     restart: "no"
+    # Match the host owner of private bind-mounted config/data when needed.
+    user: "${CHECKIN_UID:-1000}:${CHECKIN_GID:-1000}"
     environment:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
@@ -12,6 +14,11 @@ services:
       REPORT_BOT_TOKEN: ${REPORT_BOT_TOKEN:-}
       REPORT_CHAT_ID: ${REPORT_CHAT_ID:-}
       REPORT_LABEL: ${REPORT_LABEL:-telegram-daily-checkin}
+      PROXY_ENABLED: ${PROXY_ENABLED:-false}
+      PROXY_HOST: ${PROXY_HOST:-}
+      PROXY_PORT: ${PROXY_PORT:-}
+      PROXY_USERNAME: ${PROXY_USERNAME:-}
+      PROXY_PASSWORD: ${PROXY_PASSWORD:-}
       CHECKIN_CONFIG_PATH: /app/config.yaml
       DATA_DIR: /app/data
       LOGS_DIR: /app/logs
