@@ -116,6 +116,8 @@ cp config.example.yaml config.yaml
 chmod 600 .env config.yaml
 mkdir -p data logs
 chmod 700 data logs
+# Make the container use the host owner of private config/data/logs.
+printf '\nCHECKIN_UID=%s\nCHECKIN_GID=%s\n' "$(id -u)" "$(id -g)" >> .env
 ```
 
 Create Telegram API credentials at:
@@ -138,6 +140,21 @@ REPORT_LABEL=telegram-daily-checkin
 ```
 
 Edit `config.yaml` for accounts and per-bot actions.
+
+Each account `id` must be unique: it identifies that account's encrypted
+session. Bot usernames must be nonempty and action `wait_seconds` must be
+non-negative. These checks run before connecting to Telegram.
+
+Reporting and proxying are enabled when either the YAML `enabled` value or
+the corresponding `REPORT_ENABLED` / `PROXY_ENABLED` environment flag is true.
+To disable a feature, set both sources to false. Boolean strings such as
+`"false"` are parsed as booleans. When proxying is enabled in YAML, its
+address settings take precedence over `.env` defaults. When enabled only
+through the environment, `PROXY_HOST` / `PROXY_PORT` override the example
+YAML address; blank environment values use the YAML settings.
+Optional credentials use nonempty YAML values first,
+then their environment values. Unresolved credential placeholders do not
+count as configured credentials.
 
 ## Docker deployment
 
@@ -174,6 +191,11 @@ docker compose run --rm telegram-daily-checkin
 Only the first login run needs `-it`; scheduled one-shot runs do not.
 
 The service is intentionally one-shot. Cron/systemd should trigger it daily.
+
+Compose defaults to UID/GID `1000:1000`. On Linux, configure `CHECKIN_UID`
+and `CHECKIN_GID` to match the owner of the bind-mounted config, data, and
+logs, as shown above. Keep config mode `600` and directory mode `700`;
+the ownership inside the built image does not change host bind mounts.
 
 ## Persistent volumes
 
@@ -212,6 +234,9 @@ Failed: 1
 
 Use your Hermes/OpenClaw Telegram bot token/chat ID to receive daily success/failure reports.
 
+Long reports are sent in consecutive messages that stay within Telegram's
+message limit. Short reports retain their existing single-message format.
+
 ## 24-hour auto-run guard for local/offline servers
 
 For a local server that may not stay online all day, use the guard script instead of a plain once-daily cron. The guard:
@@ -222,6 +247,18 @@ For a local server that may not stay online all day, use the guard script instea
 - defaults to `86400` seconds, i.e. every 24 hours after the last success;
 - records a new success timestamp only after `docker compose run` exits successfully;
 - uses `flock` to avoid overlapping runs.
+
+The success marker is written atomically. If the internet becomes unavailable
+after a successful check-in, the guard records the trusted run start time
+instead of losing the success marker. A success timestamp in the future
+causes exit code `2` without sending more check-ins; reconcile the marker
+with trusted time before retrying.
+
+Failures keep the previous success marker, so an hourly trigger retries the
+whole configured queue, including actions that succeeded on an earlier
+partial run. A permanently failing or `manual_ui_required` action can cause
+repeated sends. Use conservative scheduling and move permanent manual work
+to the separate GUI runner; per-bot retry tracking is a separate enhancement.
 
 Install cron entries:
 
@@ -274,8 +311,36 @@ This note is about the AI-assistant maintenance workflow. The Telegram check-in 
 - Do not overlap cron runs for the same accounts.
 - If Telegram returns `FloodWaitError`, reduce run frequency, bot count, or command volume.
 
+## Development and CI
+
+Run the offline regression suite:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip check
+python -m unittest discover -s tests -v
+```
+
+CI runs on pull requests and pushes to `main`, with Python 3.11, 3.12, and
+3.13. It checks imports/syntax, dependency consistency, encrypted SQLite
+sessions, configuration, Telegram action/report boundaries, and the Linux
+daily guard. A separate job validates Compose, builds the Docker image,
+and checks encrypted storage with a private volume owned by a different UID.
+All runtime checks use synthetic accounts and local data; they do not contact
+Telegram. Linux scheduler and POSIX permission tests are skipped on Windows.
+
+The workflow uses read-only repository permissions, pinned action commits,
+timeouts, and cancellation of obsolete runs. `.dockerignore` excludes private
+configuration, session databases, logs, backups, and local environments from
+the Docker build context.
+
+See [the project audit](docs/project-audit.md) for findings and remaining work.
+
 ## Exit codes
 
 - `0`: all account/bot interactions succeeded
 - `1`: one or more account/bot interactions failed or configuration/runtime error
 - `130`: interrupted by user
+
+The daily guard also returns `2` when trusted initial internet time is
+unavailable or the recorded success time is in the future.
